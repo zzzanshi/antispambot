@@ -1,0 +1,18 @@
+[Unit]
+Description=Telegram Channel Comment Anti-Spam Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=zanshi
+Group=zanshi
+WorkingDirectory=/home/zanshi/app/anti-spam-bot
+ExecStart=/home/zanshi/app/anti-spam-bot/bin/anti-spam-bot -config /home/zanshi/app/anti-spam-bot/config.yaml
+Restart=always
+RestartSec=3
+MemoryMax=64M
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

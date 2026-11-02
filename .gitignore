@@ -1,0 +1,12 @@
+# Binary
+bin/
+anti-spam-bot
+
+# Local runtime config (contains secrets)
+config.yaml
+
+# Runtime SQLite database
+data/
+*.db
+*.db-shm
+*.db-wal

@@ -1,0 +1,37 @@
+# Telegram Bot Token（从 @BotFather 获取，记得在 BotFather 中 /setprivacy -> Disable）
+bot_token: "YOUR_TELEGRAM_BOT_TOKEN"
+
+# 管理员个人 Telegram 数字 ID 列表（必填，用于权限豁免、接收审计日志、点击“一键解封”按钮）
+# 可通过给 @userinfobot 发消息获取你的数字 ID
+admin_ids:
+  - 123456789
+
+# 审计日志接收目标 ID（可选：填专用私有日志群/频道的 -100xxxx ID；若留 0 则默认私聊发给第一个 admin_ids）
+log_chat_id: 0
+
+# 允许保护的评论区群聊 ID 白名单（可选：留空 [] 表示保护 Bot 所在的所有群组；也可指定具体的 -100xxxx 群 ID）
+allowed_chat_ids: []
+
+# 嵌入式 BoltDB 数据库存储路径（自动创建目录）
+db_path: "data/antispam.db"
+
+# 群内老成员豁免天数：加入群满 N 天以上的群成员（以及上线前已在群内的存量老群友）不受正则误伤
+# 注：未加群的纯评论区路人永远不享受豁免
+veteran_days: 7
+
+# 命中规则后的高压警戒窗口秒数（默认 60 秒）
+alert_window_seconds: 60
+
+# 警戒窗口期内，是否拦截一切非老群友通过 Inline Bot (via @xxxbot) 发出的消息
+ban_any_inline_in_alert: true
+
+# 是否将捕获到的恶意 @xxxbot 永久记入本地黑名单并持续拦截其后续引流/Inline 调用
+block_known_bad_bots: true
+
+# 反 Spam 正则规则列表（单条规则内的 all_of 所有正则同时命中即触发三件套）
+# 采用 Go RE2 正则语法，匹配前会自动剥离零宽混淆字符
+rules:
+  - name: "start_with_bot_mention"
+    all_of:
+      - '(?i)(?:^|[\s"''(\[>])/start(?:\b|@)'
+      - '(?i)@[a-z0-9_]{2,}bot\b'
