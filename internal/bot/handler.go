@@ -138,7 +138,33 @@ func (h *Handler) handleMessage(ctx context.Context, api TelegramAPI, msg *model
 		}
 	}
 
-	// 4. Combine Text + Caption for regex & alert inspection.
+	// 4. Direct interception for non-admin external Bots (is_bot=true) speaking in the group/comment section.
+	// Legitimate system bots (777000, 1087968824, self) and SenderChat (@Channel_Bot) are already handled above.
+	if msg.SenderChat == nil && msg.From != nil && msg.From.IsBot {
+		if !h.isGroupAdmin(ctx, api, msg.Chat.ID, msg.From.ID) {
+			combinedText := msg.Text
+			if msg.Caption != "" {
+				if combinedText != "" {
+					combinedText += "\n" + msg.Caption
+				} else {
+					combinedText = msg.Caption
+				}
+			}
+			botReason := fmt.Sprintf("外部非管理员 Bot 发言 (@%s)", msg.From.Username)
+			if h.store.IsKnownBadBot(msg.From.Username) {
+				botReason = fmt.Sprintf("黑名单恶意 Bot 发言 (@%s)", msg.From.Username)
+			}
+			if msg.From.Username != "" {
+				h.store.AddBadBotsMemory([]string{msg.From.Username})
+				_ = h.store.AddBadBots(ctx, msg.Chat.ID, []string{msg.From.Username}, now)
+			}
+			h.enforceMessage(ctx, api, msg, botReason, combinedText, now)
+			return
+		}
+		return
+	}
+
+	// 5. Combine Text + Caption for regex & alert inspection.
 	combinedText := msg.Text
 	if msg.Caption != "" {
 		if combinedText != "" {
@@ -171,7 +197,14 @@ func (h *Handler) handleMessage(ctx context.Context, api TelegramAPI, msg *model
 		return
 	}
 
-	// 5. Fallback exemption: group admins and members who have been in the group >= 7 days.
+	// Immediately arm in-memory bad-bot blacklist & 60s alert window BEFORE any HTTP calls (0ms latency)
+	// so concurrent worker goroutines immediately catch any bots replying milliseconds later.
+	if ruleHit {
+		h.store.AddBadBotsMemory(extractedBots)
+		h.engine.TriggerAlert(msg.Chat.ID, extractedBots, now)
+	}
+
+	// 6. Fallback exemption: group admins and members who have been in the group >= 7 days.
 	// Note: External SenderChat (channel masks) are never group members and never exempt.
 	isExternalChannelMask := msg.SenderChat != nil
 	if !isExternalChannelMask && msg.From != nil {
@@ -185,20 +218,19 @@ func (h *Handler) handleMessage(ctx context.Context, api TelegramAPI, msg *model
 		}
 	}
 
-	// 6. Execute 3-piece enforcement + sleeper bot purge + 60s alert window.
+	// 7. Execute 3-piece enforcement + sleeper bot purge + persist bad bots.
 	reason := alertReason
 	if ruleHit {
 		reason = fmt.Sprintf("命中规则 [%s]", ruleName)
-	}
-	h.enforceMessage(ctx, api, msg, reason, combinedText, now)
-
-	if ruleHit {
 		if len(extractedBots) > 0 {
 			if err := h.store.AddBadBots(ctx, msg.Chat.ID, extractedBots, now); err != nil {
 				slog.Warn("save bad bots failed", "err", err)
 			}
 		}
-		h.engine.TriggerAlert(msg.Chat.ID, extractedBots, now)
+	}
+	h.enforceMessage(ctx, api, msg, reason, combinedText, now)
+
+	if ruleHit {
 		h.purgeSleeperBots(ctx, api, msg.Chat, extractedBots, now)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"anti-spam-bot/internal/store"
@@ -14,20 +15,12 @@ import (
 )
 
 // enforceMessage executes the 3-piece enforcement (delete message + ban + revoke history)
-// and dispatches an audit notification with a 1-click unban button.
+// concurrently and dispatches an audit notification with a 1-click unban button.
 func (h *Handler) enforceMessage(ctx context.Context, api TelegramAPI, msg *models.Message, reason string, rawContent string, now time.Time) {
 	chatID := msg.Chat.ID
 	chatTitle := msg.Chat.Title
 	if chatTitle == "" {
 		chatTitle = fmt.Sprintf("%d", chatID)
-	}
-
-	// 1. Delete the triggering spam message immediately.
-	if _, err := api.DeleteMessage(ctx, &tgbot.DeleteMessageParams{
-		ChatID:    chatID,
-		MessageID: msg.ID,
-	}); err != nil {
-		slog.Warn("delete spam message failed", "chat_id", chatID, "msg_id", msg.ID, "err", err)
 	}
 
 	entry := &store.AuditEntry{
@@ -38,48 +31,73 @@ func (h *Handler) enforceMessage(ctx context.Context, api TelegramAPI, msg *mode
 		CreatedAt: now,
 	}
 
+	hasSenderChat := msg.SenderChat != nil && msg.SenderChat.ID != chatID
+	if !hasSenderChat && msg.From == nil {
+		return
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	// 1. Delete the triggering spam message immediately in parallel with the ban.
+	go func() {
+		defer wg.Done()
+		if _, err := api.DeleteMessage(ctx, &tgbot.DeleteMessageParams{
+			ChatID:    chatID,
+			MessageID: msg.ID,
+		}); err != nil {
+			slog.Warn("delete spam message failed", "chat_id", chatID, "msg_id", msg.ID, "err", err)
+		}
+	}()
+
 	// 2. Ban either the external SenderChat (channel mask) or the User (with RevokeMessages=true).
-	if msg.SenderChat != nil && msg.SenderChat.ID != chatID {
+	if hasSenderChat {
 		entry.SenderChatID = msg.SenderChat.ID
 		entry.TargetName = msg.SenderChat.Title
 		entry.TargetUsername = msg.SenderChat.Username
 
-		if _, err := api.BanChatSenderChat(ctx, &tgbot.BanChatSenderChatParams{
-			ChatID:       chatID,
-			SenderChatID: msg.SenderChat.ID,
-		}); err != nil {
-			slog.Error("ban sender_chat failed", "chat_id", chatID, "sender_chat_id", msg.SenderChat.ID, "err", err)
-		} else {
-			slog.Info("banned spam sender_chat",
-				"chat_id", chatID,
-				"sender_chat_id", msg.SenderChat.ID,
-				"title", msg.SenderChat.Title,
-				"reason", reason,
-			)
-		}
-	} else if msg.From != nil {
+		go func() {
+			defer wg.Done()
+			if _, err := api.BanChatSenderChat(ctx, &tgbot.BanChatSenderChatParams{
+				ChatID:       chatID,
+				SenderChatID: msg.SenderChat.ID,
+			}); err != nil {
+				slog.Error("ban sender_chat failed", "chat_id", chatID, "sender_chat_id", msg.SenderChat.ID, "err", err)
+			} else {
+				slog.Info("banned spam sender_chat",
+					"chat_id", chatID,
+					"sender_chat_id", msg.SenderChat.ID,
+					"title", msg.SenderChat.Title,
+					"reason", reason,
+				)
+			}
+		}()
+	} else {
 		entry.TargetUserID = msg.From.ID
 		entry.TargetName = formatUserFullName(msg.From)
 		entry.TargetUsername = msg.From.Username
 
-		if _, err := api.BanChatMember(ctx, &tgbot.BanChatMemberParams{
-			ChatID:         chatID,
-			UserID:         msg.From.ID,
-			RevokeMessages: true,
-		}); err != nil {
-			slog.Error("ban user failed", "chat_id", chatID, "user_id", msg.From.ID, "err", err)
-		} else {
-			_ = h.store.RecordMemberLeave(ctx, chatID, msg.From.ID, now)
-			slog.Info("banned spam user",
-				"chat_id", chatID,
-				"user_id", msg.From.ID,
-				"username", msg.From.Username,
-				"reason", reason,
-			)
-		}
-	} else {
-		return
+		go func() {
+			defer wg.Done()
+			if _, err := api.BanChatMember(ctx, &tgbot.BanChatMemberParams{
+				ChatID:         chatID,
+				UserID:         msg.From.ID,
+				RevokeMessages: true,
+			}); err != nil {
+				slog.Error("ban user failed", "chat_id", chatID, "user_id", msg.From.ID, "err", err)
+			} else {
+				_ = h.store.RecordMemberLeave(ctx, chatID, msg.From.ID, now)
+				slog.Info("banned spam user",
+					"chat_id", chatID,
+					"user_id", msg.From.ID,
+					"username", msg.From.Username,
+					"reason", reason,
+				)
+			}
+		}()
 	}
+
+	wg.Wait()
 
 	// 3. Persist audit log and notify admin/log channel.
 	h.recordAndNotifyAudit(ctx, api, entry)

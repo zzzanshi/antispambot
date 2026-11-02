@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 )
 
 type fakeTelegram struct {
+	mu             sync.Mutex
 	botID          int64
 	linkedChatID   int64
 	memberStatuses map[int64]models.ChatMember
@@ -39,21 +41,29 @@ func newFakeTelegram() *fakeTelegram {
 func (f *fakeTelegram) ID() int64 { return f.botID }
 
 func (f *fakeTelegram) DeleteMessage(_ context.Context, p *tgbot.DeleteMessageParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.deletedMsgs = append(f.deletedMsgs, p.MessageID)
 	return true, nil
 }
 
 func (f *fakeTelegram) BanChatMember(_ context.Context, p *tgbot.BanChatMemberParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.bannedUsers = append(f.bannedUsers, p.UserID)
 	return true, nil
 }
 
 func (f *fakeTelegram) UnbanChatMember(_ context.Context, p *tgbot.UnbanChatMemberParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.unbannedUsers = append(f.unbannedUsers, p.UserID)
 	return true, nil
 }
 
 func (f *fakeTelegram) BanChatSenderChat(_ context.Context, p *tgbot.BanChatSenderChatParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.bannedSenderChats = append(f.bannedSenderChats, p.SenderChatID)
 	return true, nil
 }
@@ -63,10 +73,14 @@ func (f *fakeTelegram) UnbanChatSenderChat(_ context.Context, _ *tgbot.UnbanChat
 }
 
 func (f *fakeTelegram) GetChat(_ context.Context, _ *tgbot.GetChatParams) (*models.ChatFullInfo, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return &models.ChatFullInfo{LinkedChatID: f.linkedChatID}, nil
 }
 
 func (f *fakeTelegram) GetChatMember(_ context.Context, p *tgbot.GetChatMemberParams) (*models.ChatMember, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if cm, ok := f.memberStatuses[p.UserID]; ok {
 		return &cm, nil
 	}
@@ -80,16 +94,22 @@ func (f *fakeTelegram) GetChatMember(_ context.Context, p *tgbot.GetChatMemberPa
 }
 
 func (f *fakeTelegram) SendMessage(_ context.Context, p *tgbot.SendMessageParams) (*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.sentMessages = append(f.sentMessages, p)
 	return &models.Message{ID: len(f.sentMessages)}, nil
 }
 
 func (f *fakeTelegram) EditMessageText(_ context.Context, p *tgbot.EditMessageTextParams) (*models.Message, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.editedMessages = append(f.editedMessages, p)
 	return &models.Message{ID: p.MessageID}, nil
 }
 
 func (f *fakeTelegram) AnswerCallbackQuery(_ context.Context, p *tgbot.AnswerCallbackQueryParams) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.answeredCallbacks = append(f.answeredCallbacks, p)
 	return true, nil
 }

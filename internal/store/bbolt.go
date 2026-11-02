@@ -303,6 +303,22 @@ func (s *Store) FindMembersByUsernames(_ context.Context, chatID int64, username
 	return out, err
 }
 
+// AddBadBotsMemory immediately adds bot usernames to the in-memory bad-bot set (0ms latency)
+// to eliminate any race window while HTTP calls are in flight.
+func (s *Store) AddBadBotsMemory(usernames []string) {
+	if len(usernames) == 0 {
+		return
+	}
+	s.mu.Lock()
+	for _, raw := range usernames {
+		uname := strings.ToLower(strings.TrimPrefix(raw, "@"))
+		if uname != "" {
+			s.badBots[uname] = struct{}{}
+		}
+	}
+	s.mu.Unlock()
+}
+
 // AddBadBots records malicious bot usernames in BoltDB and updates the in-memory set.
 func (s *Store) AddBadBots(_ context.Context, chatID int64, usernames []string, now time.Time) error {
 	if len(usernames) == 0 {
