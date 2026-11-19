@@ -12,6 +12,15 @@ log_chat_id: 0
 # 允许保护的评论区群聊 ID 白名单（可选：留空 [] 表示保护 Bot 所在的所有群组；也可指定具体的 -100xxxx 群 ID）
 allowed_chat_ids: []
 
+# 群组与群主/管理员的多对多绑定（可选：支持 1 群绑多管理员、多群绑 1 群主）
+# 未单独绑定的群自动回退推送到 log_chat_id；也可直接私聊 Bot 用 /bind 和 /unbind 动态管理
+# chat_admins:
+#   -1003514831848: [123456789]
+#   -1002626586289: [123456789, 987654321]
+
+# 推送卡片中的疑似 Spam 内容与昵称默认是否开启 Spoiler 遮罩（默认 true，每位管理员也可在 /panel 面板中单独切换）
+spoiler_default: true
+
 # 嵌入式 BoltDB 数据库存储路径（自动创建目录）
 db_path: "data/antispam.db"
 

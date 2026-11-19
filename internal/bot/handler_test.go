@@ -344,3 +344,120 @@ func TestChannelMaskExemptionVsExternalMaskBan(t *testing.T) {
 		t.Fatalf("expected external sender_chat -100444333 banned, got %v", api.bannedSenderChats)
 	}
 }
+
+func TestPanelSpoilerAndManyToManyBindings(t *testing.T) {
+	h, api, _ := setupTestHandler(t)
+	ctx := context.Background()
+
+	// Superadmin (10001) binds:
+	// - Group A (-100111) -> Owner 20001 & Admin 20002 (1 group -> many admins)
+	// - Group B (-100222) -> Owner 20001 (many groups -> 1 owner)
+	h.HandleUpdate(ctx, api, &models.Update{
+		Message: &models.Message{
+			ID:   801,
+			Chat: models.Chat{ID: 10001, Type: models.ChatTypePrivate},
+			From: &models.User{ID: 10001, FirstName: "SuperAdmin"},
+			Text: "/bind -100111 20001 20002",
+		},
+	})
+	h.HandleUpdate(ctx, api, &models.Update{
+		Message: &models.Message{
+			ID:   802,
+			Chat: models.Chat{ID: 10001, Type: models.ChatTypePrivate},
+			From: &models.User{ID: 10001, FirstName: "SuperAdmin"},
+			Text: "/bind -100222 20001",
+		},
+	})
+
+	// Admin 20002 toggles Spoiler OFF via panel callback (default is ON)
+	h.HandleUpdate(ctx, api, &models.Update{
+		CallbackQuery: &models.CallbackQuery{
+			ID:   "cb-panel-1",
+			From: models.User{ID: 20002, FirstName: "AdminB"},
+			Data: "panel:toggle_spoiler",
+			Message: models.MaybeInaccessibleMessage{
+				Message: &models.Message{ID: 10, Chat: models.Chat{ID: 20002, Type: models.ChatTypePrivate}},
+			},
+		},
+	})
+	if h.isSpoilerEnabled(20002) {
+		t.Fatalf("expected spoiler disabled for 20002 after toggle")
+	}
+	if !h.isSpoilerEnabled(20001) {
+		t.Fatalf("expected spoiler still enabled (default) for 20001")
+	}
+
+	// Clear sentMessages from /bind replies, then trigger spam in Group A (-100111)
+	api.sentMessages = nil
+	h.HandleUpdate(ctx, api, &models.Update{
+		Message: &models.Message{
+			ID:   803,
+			Chat: models.Chat{ID: -100111, Type: models.ChatTypeSupergroup, Title: "群A"},
+			From: &models.User{ID: 99901, FirstName: "SpamName"},
+			Text: "/start 818 @bh5lzkymbot",
+		},
+	})
+
+	// Both 20001 (spoiler ON) and 20002 (spoiler OFF) should receive notifications with expandable blockquote
+	if len(api.sentMessages) != 2 {
+		t.Fatalf("expected 2 audit notifications for Group A, got %d", len(api.sentMessages))
+	}
+	for _, m := range api.sentMessages {
+		if !strings.Contains(m.Text, "<blockquote expandable>") {
+			t.Fatalf("expected collapsible <blockquote expandable> in audit message, got: %s", m.Text)
+		}
+		switch m.ChatID {
+		case int64(20001):
+			if !strings.Contains(m.Text, "<tg-spoiler>") {
+				t.Fatalf("expected <tg-spoiler> for recipient 20001, got: %s", m.Text)
+			}
+		case int64(20002):
+			if strings.Contains(m.Text, "<tg-spoiler>") {
+				t.Fatalf("expected NO <tg-spoiler> for recipient 20002, got: %s", m.Text)
+			}
+		default:
+			t.Fatalf("unexpected recipient %v", m.ChatID)
+		}
+	}
+
+	// Trigger spam in Group B (-100222): ONLY 20001 should receive notification (many groups -> 1 owner)
+	api.sentMessages = nil
+	h.HandleUpdate(ctx, api, &models.Update{
+		Message: &models.Message{
+			ID:   804,
+			Chat: models.Chat{ID: -100222, Type: models.ChatTypeSupergroup, Title: "群B"},
+			From: &models.User{ID: 99902, FirstName: "SpamName2"},
+			Text: "/start 818 @wbqrmwkzbot",
+		},
+	})
+	if len(api.sentMessages) != 1 || api.sentMessages[0].ChatID != int64(20001) {
+		t.Fatalf("expected only owner 20001 notified for Group B, got %+v", api.sentMessages)
+	}
+
+	// Admin 20002 (only bound to Group A) attempts to unban Group B's audit_id=2 -> MUST be rejected!
+	h.HandleUpdate(ctx, api, &models.Update{
+		CallbackQuery: &models.CallbackQuery{
+			ID:   "cb-unauth",
+			From: models.User{ID: 20002, FirstName: "AdminB"},
+			Data: "unban:2",
+		},
+	})
+	if len(api.unbannedUsers) != 0 {
+		t.Fatalf("expected unauthorized admin 20002 NOT to unban Group B user, got %v", api.unbannedUsers)
+	}
+
+	// Owner 20001 (bound to Group B) unbans Group B's audit_id=2 -> MUST succeed!
+	h.HandleUpdate(ctx, api, &models.Update{
+		CallbackQuery: &models.CallbackQuery{
+			ID:   "cb-auth",
+			From: models.User{ID: 20001, FirstName: "OwnerA"},
+			Data: "unban:2",
+			Message: models.MaybeInaccessibleMessage{
+				Message: &models.Message{ID: 20, Chat: models.Chat{ID: 20001, Type: models.ChatTypePrivate}},
+			},
+		},
+	})
+	if len(api.unbannedUsers) != 1 || api.unbannedUsers[0] != 99902 {
+		t.Fatalf("expected owner 20001 to unban 99902, got %v", api.unbannedUsers)
+	}
+}

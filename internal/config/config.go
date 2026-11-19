@@ -23,16 +23,18 @@ type RuleConfig struct {
 
 // Config holds the runtime configuration for the anti-spam bot.
 type Config struct {
-	BotToken             string       `yaml:"bot_token"`
-	AdminIDs             []int64      `yaml:"admin_ids"`
-	LogChatID            int64        `yaml:"log_chat_id"`
-	AllowedChatIDs       []int64      `yaml:"allowed_chat_ids"`
-	DBPath               string       `yaml:"db_path"`
-	VeteranDays          int          `yaml:"veteran_days"`
-	AlertWindowSeconds   int          `yaml:"alert_window_seconds"`
-	BanAnyInlineInAlert  *bool        `yaml:"ban_any_inline_in_alert"`
-	BlockKnownBadBots    *bool        `yaml:"block_known_bad_bots"`
-	Rules                []RuleConfig `yaml:"rules"`
+	BotToken            string            `yaml:"bot_token"`
+	AdminIDs            []int64           `yaml:"admin_ids"`
+	LogChatID           int64             `yaml:"log_chat_id"`
+	AllowedChatIDs      []int64           `yaml:"allowed_chat_ids"`
+	ChatAdmins          map[int64][]int64 `yaml:"chat_admins"`
+	SpoilerDefault      *bool             `yaml:"spoiler_default"`
+	DBPath              string            `yaml:"db_path"`
+	VeteranDays         int               `yaml:"veteran_days"`
+	AlertWindowSeconds  int               `yaml:"alert_window_seconds"`
+	BanAnyInlineInAlert *bool             `yaml:"ban_any_inline_in_alert"`
+	BlockKnownBadBots   *bool             `yaml:"block_known_bad_bots"`
+	Rules               []RuleConfig      `yaml:"rules"`
 }
 
 // DefaultRules returns the built-in anti-spam rules when none are specified in config.yaml.
@@ -121,6 +123,10 @@ func Load(path string) (*Config, error) {
 		t := true
 		cfg.BlockKnownBadBots = &t
 	}
+	if cfg.SpoilerDefault == nil {
+		t := true
+		cfg.SpoilerDefault = &t
+	}
 	if cfg.LogChatID == 0 && len(cfg.AdminIDs) > 0 {
 		cfg.LogChatID = cfg.AdminIDs[0]
 	}
@@ -129,6 +135,14 @@ func Load(path string) (*Config, error) {
 	}
 
 	return &cfg, nil
+}
+
+// DefaultSpoiler returns the default spoiler mask preference for audit notifications.
+func (c *Config) DefaultSpoiler() bool {
+	if c.SpoilerDefault == nil {
+		return true
+	}
+	return *c.SpoilerDefault
 }
 
 // VeteranDuration returns the required membership duration to be treated as a veteran user.

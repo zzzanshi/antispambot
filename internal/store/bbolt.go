@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ var (
 	bucketMemberUsernames = []byte("member_usernames")
 	bucketBadBots         = []byte("bad_bots")
 	bucketAuditLogs       = []byte("audit_logs")
+	bucketUserPrefs       = []byte("user_prefs")
+	bucketChatBindings    = []byte("chat_bindings")
 )
 
 // MemberRecord represents a tracked member's join state in a specific chat.
@@ -77,7 +80,10 @@ func Open(dbPath string) (*Store, error) {
 	}
 
 	if err := db.Update(func(tx *bolt.Tx) error {
-		for _, b := range [][]byte{bucketMembers, bucketMemberUsernames, bucketBadBots, bucketAuditLogs} {
+		for _, b := range [][]byte{
+			bucketMembers, bucketMemberUsernames, bucketBadBots,
+			bucketAuditLogs, bucketUserPrefs, bucketChatBindings,
+		} {
 			if _, err := tx.CreateBucketIfNotExists(b); err != nil {
 				return err
 			}
@@ -435,4 +441,140 @@ func (s *Store) MarkAuditUnbanned(_ context.Context, id, adminID int64, now time
 		}
 		return b.Put(key, raw)
 	})
+}
+
+// UserPref stores per-recipient UI/notification preferences.
+type UserPref struct {
+	Spoiler bool `json:"spoiler"`
+}
+
+// GetUserSpoiler returns the stored spoiler preference for userID (found=false if never set).
+func (s *Store) GetUserSpoiler(userID int64) (enabled bool, found bool, err error) {
+	err = s.db.View(func(tx *bolt.Tx) error {
+		val := tx.Bucket(bucketUserPrefs).Get(u64Bytes(uint64(userID)))
+		if val == nil {
+			return nil
+		}
+		var pref UserPref
+		if err := json.Unmarshal(val, &pref); err != nil {
+			return err
+		}
+		enabled = pref.Spoiler
+		found = true
+		return nil
+	})
+	return enabled, found, err
+}
+
+// SetUserSpoiler persists the spoiler preference for userID.
+func (s *Store) SetUserSpoiler(userID int64, enabled bool) error {
+	raw, err := json.Marshal(UserPref{Spoiler: enabled})
+	if err != nil {
+		return err
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketUserPrefs).Put(u64Bytes(uint64(userID)), raw)
+	})
+}
+
+// BindChatAdmins binds one or more admin/owner user IDs to chatID (additive, deduplicated).
+func (s *Store) BindChatAdmins(chatID int64, adminIDs []int64) error {
+	if chatID == 0 || len(adminIDs) == 0 {
+		return nil
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChatBindings)
+		key := u64Bytes(uint64(chatID))
+		var existing []int64
+		if val := b.Get(key); val != nil {
+			_ = json.Unmarshal(val, &existing)
+		}
+		for _, uid := range adminIDs {
+			if uid == 0 || slices.Contains(existing, uid) {
+				continue
+			}
+			existing = append(existing, uid)
+		}
+		slices.Sort(existing)
+		raw, err := json.Marshal(existing)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, raw)
+	})
+}
+
+// UnbindChatAdmin removes adminID from chatID's dynamic bindings.
+func (s *Store) UnbindChatAdmin(chatID, adminID int64) (bool, error) {
+	if chatID == 0 || adminID == 0 {
+		return false, nil
+	}
+	var removed bool
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChatBindings)
+		key := u64Bytes(uint64(chatID))
+		val := b.Get(key)
+		if val == nil {
+			return nil
+		}
+		var existing []int64
+		if err := json.Unmarshal(val, &existing); err != nil {
+			return err
+		}
+		filtered := make([]int64, 0, len(existing))
+		for _, uid := range existing {
+			if uid == adminID {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, uid)
+		}
+		if !removed {
+			return nil
+		}
+		if len(filtered) == 0 {
+			return b.Delete(key)
+		}
+		raw, err := json.Marshal(filtered)
+		if err != nil {
+			return err
+		}
+		return b.Put(key, raw)
+	})
+	return removed, err
+}
+
+// GetChatBindings returns dynamically bound admin/owner user IDs for chatID.
+func (s *Store) GetChatBindings(chatID int64) ([]int64, error) {
+	var out []int64
+	err := s.db.View(func(tx *bolt.Tx) error {
+		val := tx.Bucket(bucketChatBindings).Get(u64Bytes(uint64(chatID)))
+		if val == nil {
+			return nil
+		}
+		return json.Unmarshal(val, &out)
+	})
+	return out, err
+}
+
+// ListAllChatBindings returns all dynamic chatID -> []adminID bindings.
+func (s *Store) ListAllChatBindings() (map[int64][]int64, error) {
+	res := make(map[int64][]int64)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(bucketChatBindings).ForEach(func(k, v []byte) error {
+			if len(k) != 8 {
+				return nil
+			}
+			chatID := int64(binary.BigEndian.Uint64(k))
+			var admins []int64
+			if err := json.Unmarshal(v, &admins); err != nil {
+				return nil
+			}
+			if len(admins) > 0 {
+				res[chatID] = admins
+			}
+			return nil
+		})
+	})
+	return res, err
 }

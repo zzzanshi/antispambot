@@ -163,11 +163,12 @@ func (h *Handler) recordAndNotifyAudit(ctx context.Context, api TelegramAPI, ent
 		slog.Error("insert audit log failed", "err", err)
 		return
 	}
-	if h.cfg.LogChatID == 0 {
+
+	recipients := h.resolveAuditRecipients(entry.ChatID)
+	if len(recipients) == 0 {
 		return
 	}
 
-	text := formatAuditHTML(entry, "")
 	disablePreview := true
 	kb := &models.InlineKeyboardMarkup{
 		InlineKeyboard: [][]models.InlineKeyboardButton{
@@ -180,18 +181,29 @@ func (h *Handler) recordAndNotifyAudit(ctx context.Context, api TelegramAPI, ent
 		},
 	}
 
-	if _, err := api.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID:             h.cfg.LogChatID,
-		Text:               text,
-		ParseMode:          models.ParseModeHTML,
-		LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: &disablePreview},
-		ReplyMarkup:        kb,
-	}); err != nil {
-		slog.Warn("send audit notification failed", "log_chat_id", h.cfg.LogChatID, "audit_id", auditID, "err", err)
+	for _, rcptID := range recipients {
+		spoiler := h.isSpoilerEnabled(rcptID)
+		text := formatAuditHTML(entry, spoiler, "")
+		if _, err := api.SendMessage(ctx, &tgbot.SendMessageParams{
+			ChatID:             rcptID,
+			Text:               text,
+			ParseMode:          models.ParseModeHTML,
+			LinkPreviewOptions: &models.LinkPreviewOptions{IsDisabled: &disablePreview},
+			ReplyMarkup:        kb,
+		}); err != nil {
+			slog.Warn("send audit notification failed", "recipient_id", rcptID, "audit_id", auditID, "err", err)
+		}
 	}
 }
 
-func formatAuditHTML(e *store.AuditEntry, statusLine string) string {
+func wrapSpoiler(escaped string, spoiler bool) string {
+	if !spoiler || escaped == "" {
+		return escaped
+	}
+	return "<tg-spoiler>" + escaped + "</tg-spoiler>"
+}
+
+func formatAuditHTML(e *store.AuditEntry, spoiler bool, statusLine string) string {
 	var b strings.Builder
 	b.WriteString("🛡 <b>反 Spam 三件套已执行</b>\n")
 	fmt.Fprintf(&b, "<b>群组:</b> %s (<code>%d</code>)\n", escapeHTML(e.ChatTitle), e.ChatID)
@@ -202,7 +214,7 @@ func formatAuditHTML(e *store.AuditEntry, statusLine string) string {
 			uname = " @" + escapeHTML(e.TargetUsername)
 		}
 		fmt.Fprintf(&b, "<b>频道马甲:</b> %s%s (<code>%d</code>)\n",
-			escapeHTML(e.TargetName), uname, e.SenderChatID)
+			wrapSpoiler(escapeHTML(e.TargetName), spoiler), uname, e.SenderChatID)
 	} else {
 		uname := ""
 		if e.TargetUsername != "" {
@@ -213,12 +225,13 @@ func formatAuditHTML(e *store.AuditEntry, statusLine string) string {
 			name = "Unknown"
 		}
 		fmt.Fprintf(&b, "<b>用户:</b> %s%s (<code>%d</code>)\n",
-			escapeHTML(name), uname, e.TargetUserID)
+			wrapSpoiler(escapeHTML(name), spoiler), uname, e.TargetUserID)
 	}
 
 	fmt.Fprintf(&b, "<b>原因:</b> %s\n", escapeHTML(e.Reason))
 	if e.Snippet != "" {
-		fmt.Fprintf(&b, "<b>内容:</b>\n<blockquote>%s</blockquote>\n", escapeHTML(e.Snippet))
+		fmt.Fprintf(&b, "<b>内容:</b>\n<blockquote expandable>%s</blockquote>\n",
+			wrapSpoiler(escapeHTML(e.Snippet), spoiler))
 	}
 	if statusLine != "" {
 		fmt.Fprintf(&b, "\n%s", statusLine)

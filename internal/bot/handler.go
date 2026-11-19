@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -87,12 +86,32 @@ func (h *Handler) handleMessage(ctx context.Context, api TelegramAPI, msg *model
 		return
 	}
 
-	// Admin status command in private chat only.
+	// Private chat commands: control panel & superadmin chat binding management.
 	if msg.Chat.Type == models.ChatTypePrivate {
-		if msg.From != nil && h.cfg.IsAdmin(msg.From.ID) {
-			txt := strings.TrimSpace(msg.Text)
-			if strings.HasPrefix(txt, "/status") || strings.HasPrefix(txt, "/start") {
-				h.replyAdminStatus(ctx, api, msg.Chat.ID, now)
+		if msg.From == nil {
+			return
+		}
+		txt := strings.TrimSpace(msg.Text)
+		cmd := ""
+		if fields := strings.Fields(txt); len(fields) > 0 {
+			cmd = strings.SplitN(fields[0], "@", 2)[0]
+		}
+		switch cmd {
+		case "/panel", "/settings", "/status", "/start":
+			if h.canAccessPanel(msg.From.ID) {
+				h.sendAdminPanel(ctx, api, msg.From.ID, msg.Chat.ID, now)
+			}
+		case "/bind":
+			if h.cfg.IsAdmin(msg.From.ID) {
+				h.handleBindCommand(ctx, api, msg)
+			}
+		case "/unbind":
+			if h.cfg.IsAdmin(msg.From.ID) {
+				h.handleUnbindCommand(ctx, api, msg)
+			}
+		case "/bindings":
+			if h.cfg.IsAdmin(msg.From.ID) {
+				h.handleBindingsCommand(ctx, api, msg.Chat.ID)
 			}
 		}
 		return
@@ -114,13 +133,13 @@ func (h *Handler) handleMessage(ctx context.Context, api TelegramAPI, msg *model
 		return
 	}
 
-	// 2. Hard system & configured admin exemptions.
+	// 2. Hard system, superadmin, and bound chat owner/admin exemptions.
 	if msg.From != nil {
 		switch msg.From.ID {
 		case telegramServiceUserID, groupAnonymousBotUserID, api.ID():
 			return
 		}
-		if h.cfg.IsAdmin(msg.From.ID) {
+		if h.canManageChat(msg.From.ID, msg.Chat.ID) {
 			return
 		}
 	}
@@ -393,29 +412,4 @@ func (h *Handler) getOrFetchLinkedChannel(ctx context.Context, api TelegramAPI, 
 	}
 	h.setLinkedChannel(chatID, info.LinkedChatID)
 	return info.LinkedChatID
-}
-
-func (h *Handler) replyAdminStatus(ctx context.Context, api TelegramAPI, chatID int64, now time.Time) {
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	uptime := now.Sub(h.startedAt).Round(time.Second)
-
-	msg := fmt.Sprintf(
-		"✅ <b>Anti-Spam Bot 运行正常</b>\n"+
-			"• <b>运行时长:</b> <code>%s</code>\n"+
-			"• <b>内存占用 (Alloc):</b> <code>%.2f MB</code>\n"+
-			"• <b>老群友豁免阈值:</b> <code>%d 天</code>\n"+
-			"• <b>触发警戒窗口:</b> <code>%d 秒</code>\n"+
-			"• <b>加载规则数:</b> <code>%d 条</code>",
-		uptime,
-		float64(ms.Alloc)/(1024*1024),
-		h.cfg.VeteranDays,
-		h.cfg.AlertWindowSeconds,
-		len(h.cfg.Rules),
-	)
-	_, _ = api.SendMessage(ctx, &tgbot.SendMessageParams{
-		ChatID:    chatID,
-		Text:      msg,
-		ParseMode: models.ParseModeHTML,
-	})
 }
