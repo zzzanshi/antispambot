@@ -13,8 +13,10 @@ import (
 var botMentionRegex = regexp.MustCompile(`(?i)@([a-z0-9_]{2,}bot)\b`)
 
 type compiledRule struct {
-	name  string
-	allOf []*regexp.Regexp
+	name    string
+	target  string // "message", "name", "any", "combined"
+	compact bool
+	allOf   []*regexp.Regexp
 }
 
 type alertState struct {
@@ -48,9 +50,20 @@ func New(cfg *config.Config) (*Engine, error) {
 			}
 			reList = append(reList, re)
 		}
+		target := strings.ToLower(strings.TrimSpace(r.Target))
+		if target == "" {
+			target = "message"
+		}
+		switch target {
+		case "message", "name", "any", "combined":
+		default:
+			return nil, fmt.Errorf("rule %q has invalid target %q (expected message, name, any, or combined)", r.Name, r.Target)
+		}
 		compiled = append(compiled, compiledRule{
-			name:  r.Name,
-			allOf: reList,
+			name:    r.Name,
+			target:  target,
+			compact: r.Compact,
+			allOf:   reList,
 		})
 	}
 
@@ -70,25 +83,6 @@ func New(cfg *config.Config) (*Engine, error) {
 		blockKnownBadBots:   blockBad,
 		alerts:              make(map[int64]*alertState),
 	}, nil
-}
-
-// NormalizeText strips zero-width and invisible characters commonly used by spammers to bypass regex filters.
-func NormalizeText(s string) string {
-	if s == "" {
-		return ""
-	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch r {
-		case '\u200b', '\u200c', '\u200d', '\u200e', '\u200f',
-			'\u2060', '\ufeff', '\u00ad', '\u034f':
-			continue
-		default:
-			b.WriteRune(r)
-		}
-	}
-	return b.String()
 }
 
 // ExtractBotMentions extracts deduplicated lowercase bot usernames (without leading '@') from text.
@@ -113,23 +107,74 @@ func ExtractBotMentions(text string) []string {
 	return out
 }
 
-// MatchRules evaluates all configured spam rules against rawText.
-// Returns (matched, ruleName, extractedBotUsernames).
+func matchAll(allOf []*regexp.Regexp, s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, re := range allOf {
+		if !re.MatchString(s) {
+			return false
+		}
+	}
+	return true
+}
+
+// MatchRules evaluates configured spam rules against message text alone.
 func (e *Engine) MatchRules(rawText string) (bool, string, []string) {
-	clean := NormalizeText(rawText)
-	if clean == "" {
+	return e.MatchMessage(MessageContext{Text: rawText})
+}
+
+// MatchMessage evaluates all configured spam rules against message text and sender display name.
+// Returns (matched, ruleName, extractedBotUsernames).
+func (e *Engine) MatchMessage(mc MessageContext) (bool, string, []string) {
+	normMsg := NormalizeText(mc.Text)
+	normName := NormalizeText(mc.SenderFullName)
+	if normMsg == "" && normName == "" {
 		return false, "", nil
 	}
-	for _, rule := range e.rules {
-		allMatched := true
-		for _, re := range rule.allOf {
-			if !re.MatchString(clean) {
-				allMatched = false
-				break
-			}
+
+	var compactMsg, compactName string
+	compactComputed := false
+	ensureCompact := func() {
+		if !compactComputed {
+			compactMsg = CompactAndFold(mc.Text)
+			compactName = CompactAndFold(mc.SenderFullName)
+			compactComputed = true
 		}
-		if allMatched {
-			return true, rule.name, ExtractBotMentions(clean)
+	}
+
+	for _, rule := range e.rules {
+		msgCandidate := normMsg
+		nameCandidate := normName
+		if rule.compact {
+			ensureCompact()
+			msgCandidate = compactMsg
+			nameCandidate = compactName
+		}
+
+		var hit bool
+		switch rule.target {
+		case "message":
+			hit = matchAll(rule.allOf, msgCandidate)
+		case "name":
+			hit = matchAll(rule.allOf, nameCandidate)
+		case "any":
+			hit = matchAll(rule.allOf, msgCandidate) || matchAll(rule.allOf, nameCandidate)
+		case "combined":
+			combined := nameCandidate
+			if msgCandidate != "" {
+				if combined != "" {
+					combined += "\n" + msgCandidate
+				} else {
+					combined = msgCandidate
+				}
+			}
+			hit = matchAll(rule.allOf, combined)
+		}
+
+		if hit {
+			bots := ExtractBotMentions(normMsg + "\n" + normName)
+			return true, rule.name, bots
 		}
 	}
 	return false, "", nil

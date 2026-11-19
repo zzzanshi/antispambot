@@ -10,10 +10,15 @@ import (
 )
 
 // RuleConfig defines a spam detection rule.
-// All regex patterns in AllOf must match the normalized message text for the rule to trigger.
+// Target controls what is inspected: "message" (default), "name" (sender display name / channel title),
+// "any" (matches if either message or name matches), or "combined" (name + "\n" + message).
+// When Compact is true, whitespace/punctuation separators are stripped and Traditional/radical variants
+// are folded before matching, defeating comma/space/variant-character obfuscation.
 type RuleConfig struct {
-	Name  string   `yaml:"name"`
-	AllOf []string `yaml:"all_of"`
+	Name    string   `yaml:"name"`
+	Target  string   `yaml:"target,omitempty"`
+	Compact bool     `yaml:"compact,omitempty"`
+	AllOf   []string `yaml:"all_of"`
 }
 
 // Config holds the runtime configuration for the anti-spam bot.
@@ -34,10 +39,51 @@ type Config struct {
 func DefaultRules() []RuleConfig {
 	return []RuleConfig{
 		{
-			Name: "start_with_bot_mention",
+			Name:   "start_with_bot_mention",
+			Target: "message",
 			AllOf: []string{
 				`(?i)(?:^|[\s"'(\[>])/start(?:\b|@)`,
 				`(?i)@[a-z0-9_]{2,}bot\b`,
+			},
+		},
+		{
+			Name:   "bot_campaign_spam",
+			Target: "message",
+			AllOf: []string{
+				`(?i)@[a-z0-9_]{2,}bot\b`,
+				`(?i)(?:\bcampaign[_-]?\d+|\b[a-z]?[0-9a-f]{16,}\b)`,
+			},
+		},
+		{
+			Name:    "arrow_bio_bait",
+			Target:  "message",
+			Compact: true,
+			AllOf: []string{
+				`^(?:\x{2b05}|\x{2190}|\x{1f448})+(?:\x{597d}\x{770b}|\x{70b9}\x{6211}|\x{770b}\x{7b80}\x{4ecb}|\x{8fdb}\x{7b80}\x{4ecb}|\x{70b9}\x{5934}\x{50cf}|\x{770b}\x{4e3b}\x{9875})`,
+			},
+		},
+		{
+			Name:    "bio_redirect_spam",
+			Target:  "any",
+			Compact: true,
+			AllOf: []string{
+				`(?:\x{8fdb}\x{7b80}\x{4ecb}\x{770b}|\x{6bcf}\x{5929}\x{66f4}\x{65b0}\x{8fdb}\x{7b80}\x{4ecb})`,
+			},
+		},
+		{
+			Name:    "rare_homoglyph_spam",
+			Target:  "any",
+			Compact: true,
+			AllOf: []string{
+				`(?:[\x{3400}-\x{4dbf}]\x{5973}|\x{5466}\x{9495}|\x{5e7c}\x{9495}|\x{5466}\x{5973})`,
+			},
+		},
+		{
+			Name:    "obfuscated_illegal_ad",
+			Target:  "any",
+			Compact: true,
+			AllOf: []string{
+				`(?:\x{9b3c}\x{7236}|\x{5341}\x{5c81}\x{5973}\x{513f}|\x{5c0f}\x{4f84}\x{5973}|\x{5904}\x{5973}\x{819c}|\x{79c1}\x{5bc6}\x{89c6}\x{9891}|\x{88ab}\x{4fb5}\x{72af}\x{89c6}\x{9891}|\x{6697}\x{7f51}.{0,12}\x{89c6}\x{9891}|\x{5c0f}\x{5b66}\x{751f}.{0,8}\x{89c6}\x{9891})`,
 			},
 		},
 	}

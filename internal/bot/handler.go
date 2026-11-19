@@ -190,7 +190,7 @@ func (h *Handler) handleMessage(ctx context.Context, api TelegramAPI, msg *model
 	}
 
 	alertHit, alertReason := h.engine.CheckAlertAndBadBots(mc, h.store.IsKnownBadBot, now)
-	ruleHit, ruleName, extractedBots := h.engine.MatchRules(combinedText)
+	ruleHit, ruleName, extractedBots := h.engine.MatchMessage(mc)
 
 	if !alertHit && !ruleHit {
 		// Fast path: 0 DB queries, 0 Telegram API calls.
@@ -198,8 +198,8 @@ func (h *Handler) handleMessage(ctx context.Context, api TelegramAPI, msg *model
 	}
 
 	// Immediately arm in-memory bad-bot blacklist & 60s alert window BEFORE any HTTP calls (0ms latency)
-	// so concurrent worker goroutines immediately catch any bots replying milliseconds later.
-	if ruleHit {
+	// when bot mentions are detected, so concurrent worker goroutines immediately catch any bots replying milliseconds later.
+	if ruleHit && len(extractedBots) > 0 {
 		h.store.AddBadBotsMemory(extractedBots)
 		h.engine.TriggerAlert(msg.Chat.ID, extractedBots, now)
 	}
