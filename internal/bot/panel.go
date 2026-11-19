@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"runtime"
 	"slices"
 	"strconv"
@@ -141,10 +142,10 @@ func (h *Handler) buildPanelView(userID int64, now time.Time) (string, *models.I
 	runtime.ReadMemStats(&ms)
 	uptime := now.Sub(h.startedAt).Round(time.Second)
 
-	spoilerText := "👁 已关闭（仅折叠显示）"
+	spoilerText := "❌"
 	toggleBtnText := "🙈 开启遮罩 (Spoiler)"
 	if spoilerOn {
-		spoilerText = "🙈 已开启（折叠 + 遮罩）"
+		spoilerText = "✅"
 		toggleBtnText = "👁 关闭遮罩 (Spoiler)"
 	}
 
@@ -153,7 +154,7 @@ func (h *Handler) buildPanelView(userID int64, now time.Time) (string, *models.I
 	if isSuper {
 		fmt.Fprintf(&b, "• <b>身份:</b> 超级管理员 (<code>%d</code>)\n", userID)
 		fmt.Fprintf(&b, "• <b>运行时长:</b> <code>%s</code> | <b>内存:</b> <code>%.2f MB</code>\n", uptime, float64(ms.Alloc)/(1024*1024))
-		fmt.Fprintf(&b, "• <b>规则数:</b> <code>%d 条</code> | <b>老群友豁免:</b> <code>%d 天</code>\n", len(h.cfg.Rules), h.cfg.VeteranDays)
+		fmt.Fprintf(&b, "• <b>规则数:</b> <code>%d 条</code> | <b>群友豁免:</b> <code>%d 天</code>\n", len(h.cfg.Rules), h.cfg.VeteranDays)
 	} else {
 		fmt.Fprintf(&b, "• <b>身份:</b> 群主/管理员 (<code>%d</code>)\n", userID)
 	}
@@ -163,7 +164,7 @@ func (h *Handler) buildPanelView(userID int64, now time.Time) (string, *models.I
 		all := h.getAllEffectiveBindings()
 		b.WriteString("\n<b>📋 当前群组绑定关系:</b>\n")
 		if len(all) == 0 {
-			b.WriteString("<i>暂无单独绑定（所有群默认推送至 log_chat_id）</i>\n")
+			b.WriteString("<i>暂无单独绑定</i>\n")
 		} else {
 			cids := make([]int64, 0, len(all))
 			for cid := range all {
@@ -178,10 +179,6 @@ func (h *Handler) buildPanelView(userID int64, now time.Time) (string, *models.I
 				fmt.Fprintf(&b, "• 群 <code>%d</code> ➔ %s\n", cid, strings.Join(adminStrs, ", "))
 			}
 		}
-		b.WriteString("\n<b>🛠 绑定管理命令:</b>\n")
-		b.WriteString("<code>/bind &lt;群ID&gt; &lt;用户ID&gt; [用户ID2...]</code>\n")
-		b.WriteString("<code>/unbind &lt;群ID&gt; &lt;用户ID&gt;</code>\n")
-		b.WriteString("<code>/bindings</code> 查看完整绑定表")
 	} else {
 		chats := h.getAdminManagedChats(userID)
 		b.WriteString("\n<b>📋 我管理的群组:</b>\n")
@@ -371,4 +368,35 @@ func (h *Handler) handleBindingsCommand(ctx context.Context, api TelegramAPI, ch
 		ParseMode: models.ParseModeHTML,
 		Text:      b.String(),
 	})
+}
+
+// RegisterCommands configures Telegram's native "/" command autocomplete menu.
+// Regular bound owners/admins only see /panel in private chats, while superadmins
+// additionally see /bind, /unbind, and /bindings in their own private chat.
+func (h *Handler) RegisterCommands(ctx context.Context, b *tgbot.Bot) {
+	// Default private chat menu for bound group owners/admins
+	if _, err := b.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{
+		Scope: &models.BotCommandScopeAllPrivateChats{},
+		Commands: []models.BotCommand{
+			{Command: "panel", Description: "打开控制面板（查询我管理的群组 & 遮罩设置）"},
+		},
+	}); err != nil {
+		slog.Warn("register default private commands failed", "err", err)
+	}
+
+	// Superadmin-only private chat menu
+	superCommands := []models.BotCommand{
+		{Command: "panel", Description: "打开控制面板（状态 & Spoiler 遮罩）"},
+		{Command: "bind", Description: "绑定群组与群主/管理员: /bind <群ID> <用户ID...>"},
+		{Command: "unbind", Description: "解除绑定: /unbind <群ID> <用户ID>"},
+		{Command: "bindings", Description: "查看全部群组绑定关系"},
+	}
+	for _, adminID := range h.cfg.AdminIDs {
+		if _, err := b.SetMyCommands(ctx, &tgbot.SetMyCommandsParams{
+			Scope:    &models.BotCommandScopeChat{ChatID: adminID},
+			Commands: superCommands,
+		}); err != nil {
+			slog.Warn("register superadmin commands failed", "admin_id", adminID, "err", err)
+		}
+	}
 }

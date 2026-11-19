@@ -86,6 +86,8 @@ func main() {
 		os.Exit(1)
 	}
 
+	handler.RegisterCommands(ctx, b)
+
 	slog.Info("anti-spam bot started",
 		"bot_id", b.ID(),
 		"veteran_days", cfg.VeteranDays,
