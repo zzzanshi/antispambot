@@ -127,7 +127,7 @@ func Load(path string) (*Config, error) {
 		t := true
 		cfg.SpoilerDefault = &t
 	}
-	if cfg.LogChatID == 0 && len(cfg.AdminIDs) > 0 {
+	if cfg.LogChatID == 0 && len(cfg.AdminIDs) > 0 && len(cfg.ChatAdmins) == 0 {
 		cfg.LogChatID = cfg.AdminIDs[0]
 	}
 	if len(cfg.Rules) == 0 {
